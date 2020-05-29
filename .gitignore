@@ -1,4 +1,5 @@
-# Local folder
+# Local folders
+.vscode
 edusat/
 ref/
 
