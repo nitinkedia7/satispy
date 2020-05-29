@@ -4,7 +4,7 @@ class ClauseState(Enum):
     C_UNRESOLVED = 0
     C_SATISFIED = 1
     C_CONFLICTING = 2
-    C_UNIT = 1
+    C_UNIT = 3
 
 class LiteralState(Enum):
     L_UNASSIGNED = 0
@@ -44,12 +44,20 @@ class Clause:
     second_watcher : int
     is_unary: bool
 
+    def __init__(self):
+        self.literals = []
+        self.is_unary = False
+
     def __init__(self, literals: list, clause_id: int):
         self.id = clause_id
         self.literals = literals
         self.is_unary = (len(literals) == 1)
-        self.first_watcher = 0
-        self.second_watcher = len(literals) - 1
+        # self.first_watcher = 0
+        # self.second_watcher = len(literals) - 1
+
+    def insert_literal(self, lit):
+        self.literals.append(lit)
+        self.is_unary = (len(literals) == 1)
 
     def print(self):
         print("Clause {} with literals {}".format(self.id, self.literals))
@@ -59,6 +67,27 @@ class Clause:
     def get_second_watcher(self):
         return self.literals[self.second_watcher]
 
+    def change_watch_location(solver, is_first_watcher, other_watcher) -> (ClauseState, int):
+        # find an unset watch position other than other_watcher
+        for index, lit in enumerate(self.literal):
+            if (lit == other_watcher):
+                pass
+            lit_state = solver.get_literal_status(lit)
+            if (lit_state != LiteralState.L_FALSE):
+                if is_first_watcher:
+                    self.first_watcher = index
+                else:
+                    self.second_watcher = index
+                return ClauseState:C_UNRESOLVED, index
+        other_watch_status = solver.get_literal_status(other_watcher)
+        if (other_watch_status == LiteralState.L_FALSE):
+            return ClauseState:C_CONFLICTING, None
+        elif other_watch_status == LiteralState.L_UNASSIGNED
+            return ClauseState.C_UNIT, None
+        else:
+            assert(other_watch_status == LiteralState.L_TRUE)
+            return ClauseState.C_SATISFIED, None
+
 class Solver:
     var_count: int
     clause_count: int
@@ -66,8 +95,10 @@ class Solver:
 
     curr_level : int
     curr_assignment: list
+    prev_assignment: list
     assignment_level: list
     assigned_till_now: list
+    antecedent : list
 
     # BCP data structures
     bcp_stack: list
@@ -84,7 +115,9 @@ class Solver:
         self.clauses = []
         self.curr_level = 0
         self.curr_assignment = [LiteralState.L_UNASSIGNED] * (var_count + 1)
+        self.prev_assignment = [-1] * (var_count + 1)
         self.assignment_level = [-1] * (var_count + 1)
+        self.antecedent = [-1] * (var_count + 1)
         
         self.bcp_stack = []
         self.watch_map = {}
@@ -103,8 +136,10 @@ class Solver:
         else:
             self.watch_map[lit] = [clause_id]
 
-    def insert_clause(self, clause : Clause):
+    def insert_clause(self, clause : Clause, first_watch, second_watch):
         self.clauses.append(clause)
+        clause.first_watcher = first_watch
+        clause.second_watcher = second_watch
         clause_id = len(self.clauses) - 1
         # Bump their scores
         for literal in clause.literals:
@@ -134,6 +169,142 @@ class Solver:
         self.assignment_level[var] = self.curr_level
         print("Assiged literal {} as {}, variable {} as {}".format(
             lit, LiteralState.L_TRUE, var, self.curr_assignment[var]))
+
+    def get_literal_status(lit : int) -> LiteralState:
+        var_status = self.curr_assignment[get_variable(lit)]
+        if var_status == LiteralState.L_UNASSIGNED:
+            return LiteralState.L_UNASSIGNED
+        elif var_status == LiteralState.L_TRUE:
+            return LiteralState.L_FALSE if is_negative(lit) else LiteralState.L_TRUE
+        else:
+            return LiteralState.L_TRUE if is_negative(lit) else LiteralState.L_FALSE
+
+    def bcp() -> SolverState:
+        while (bcp_stack):
+            lit = bcp_stack.pop()
+            assert get_literal_status(lit) == LiteralState.L_FALSE
+
+            int conflicting_clause_id = -1
+            new_watch_list = [x for x in self.watch_map[lit]]
+            for clause_id in reversed(self.watch_map[lit]):
+                clause = self.clauses[clause_id]
+                
+                # Find how is it enforced that lit is one of the watchers
+                first_watch = clause.get_first_watcher()
+                second_watch = clause.get_second_watcher()
+                bool lit_is_first = (lit == first_watch)
+                other_watch = second_watch if lit_is_first else first_watch
+                clause_state, new_watch_loc = clause.change_watch_location(self, lit_is_first, other_watch)
+                
+                if (clause_state == ClauseState:C_SATISFIED):
+                    pass
+                elif (clause_state == ClauseState.C_UNIT):
+                    self.assert_nonunary_literal(other_watch)
+                    var = get_variable(other_watch)
+                    self.antecedent[var] = clause_id
+                    bcp_stack.append(get_opposite_literal(other_watch))
+
+                elif (clause_state == ClauseState:C_CONFLICTING):
+                    if self.curr_level == 0:
+                        return SolverState.S_UNSATISFIED
+                    conflicting_clause_id = clause_id
+                    self.bcp_stack.clear()
+                    break
+
+                elif (clause_state == ClauseState:C_UNRESOLVED):
+                    new_watch_list.remove(clause_id)
+                    new_watcher = clause.literals[new_watch_loc]
+                    self.watch_this_clause(new_watcher, clause_id)
+            self.watch_map[lit].clear()
+            self.watch_map[lit] += new_watch_list
+            if (conflicting_clause_id >= 0):
+                return SolverState:S_CONFLICT
+        return SolverState:S_UNRESOLVED
+
+    def get_lit_memo(var) -> int:
+        prev_state = prev_assignment[var]
+        if (prev_state == 1):
+            return get_literal(v)
+        else:
+            # Both 0 and 1
+            return get_literal(-1 * v)
+
+    def decide() -> SolverState:
+        # MINISAT based decision heuristic
+        selected_var = 0
+        selected_lit = 0
+        max_activity_till_now = 0.0
+        bool unassigned_var_found = False
+        for var, state in enumerate(curr_assignment):
+            if (var == 0):
+                pass
+            if (state == LiteralState:L_UNASSIGNED):
+                unassigned_var_found = True
+                if (activity[var] > max_activity_till_now):
+                    selected_lit = get_lit_memo(var)
+                    max_activity_till_now = activity[v]
+        if not unassigned_var_found:
+            return SolverState:S_UNSATISFIED
+        assert selected_lit != 0
+        self.curr_level += 1
+        self.bcp_stack.append(get_opposite_literal(selected_lit))
+        return SolverState.S_UNRESOLVED
+    
+    def analyze_conflict(Clause conflicting_clause) -> int:
+        curr_literals = [lit for lit in conflicting_clause.literals]
+        learned_clause = Clause()
+        marked = [False] * (var_count + 1)
+        int backtrack_level = 0
+        int to_resolve_count = 0
+        int watch_lit = 0
+        bool first_iter = True
+
+        int trail_index = len(self.assigned_till_now) - 1
+        int resolve_lit = 0, resolve_var = 0
+        while (first_iter or to_resolve_count > 0):
+            first_iter = False
+            for lit in curr_literals:
+                var = get_variable(lit)
+                if marked[var]:
+                    continue
+                marked[v] = True
+                if (assignment_level[var] == curr_level):
+                    to_resolve_count += 1
+                else:
+                    learned_clause.insert_literal(lit)
+                    if (assignment_level[var] > backtrack_level):
+                        backtrack_level = assignment_level[var]
+                        watch_lit = len(learned_clause.literals) - 1
+            # Find a variable to be resolved
+            while (trail_index > 0):
+                resolve_lit = self.assigned_till_now[trail_index]
+                resolve_var = get_variable(resolve_lit)
+                if marked[resolve_var]:
+                    break
+            marked[resolve_var] = False
+            to_resolve_count -= 1
+            if not to_resolve_count:
+                break 
+            antecedent_id = antecedent[resolve]
+            curr_literals = [lit for lit in self.clauses[antecedent_id] if lit != resolve_lit]
+        
+        # resolve_lit is an UIP
+        opposite_resolv_lit = get_opposite_literal(resolve_lit)
+        learned_clause.insert_literal(opposite_resolv_lit)
+        # TODO: MINISAT decay
+        if learned_clause.is_unary:
+            bcp_stack.append(opposite_resolv_lit)
+        else:
+            bcp_stack.append(resolve_lit)
+            solver.insert_clause(learned_clause, watch_lit, learned_clause.size() - 1)
+        return backtrack_level
+        
+
+
+
+
+                
+
 
 def read_cnf():
     input_file = open("unsat.cnf", 'r')
