@@ -1,6 +1,12 @@
 from enum import Enum
 
 
+class CONSTANTS:
+    VAR_DECAY_RATE = 0.95
+    THRESHOLD_MULTIPLIER = 1.1
+    RESTART_LOWER_BOUND = 100
+    RESTART_UPPER_BOUND_BASE = 1000
+
 var_decay = 0.95
 class ClauseState(Enum):
     C_UNRESOLVED = 0
@@ -52,8 +58,9 @@ class Clause:
         # self.second_watcher = len(literals) - 1
 
     def insert_literal(self, lit):
-        self.literals.append(lit)
-        self.is_unary = (len(self.literals) == 1)
+        if lit not in self.literals:
+            self.literals.append(lit)
+            self.is_unary = (len(self.literals) == 1)
 
     def print(self, clause_id: int):
         print("Clause {} with literals {}, watchers {} and {}".format(
@@ -98,7 +105,8 @@ class Solver:
     assignment_level: list
     assigned_till_now: list
     antecedent : list
-    separators: list
+    assignments_upto_level : list
+    conflicts_upto_level : list
 
     # BCP data structures
     bcp_stack: list
@@ -107,6 +115,11 @@ class Solver:
     # MINISAT scores
     increment_value : float  
     activity : list
+
+    # Dynamic restart parameters
+    restart_threshold : int
+    restart_upper_bound : int
+    learnt_clauses_count : int
 
     def __init__(self, var_count, clause_count):
         self.var_count = var_count
@@ -120,13 +133,36 @@ class Solver:
         self.assignment_level = [-1] * (var_count + 1)
         self.assigned_till_now = []
         self.antecedent = [-1] * (var_count + 1)
-        self.separators = [0]
+        self.assignments_upto_level = [0]
+        self.conflicts_upto_level = [0]
 
         self.bcp_stack = []
         self.watch_map = {}
         
         self.increment_value = 1.0
         self.activity = [0.0] * (var_count + 1)
+
+        self.restart_threshold = CONSTANTS.RESTART_LOWER_BOUND
+        self.restart_upper_bound = CONSTANTS.RESTART_UPPER_BOUND_BASE
+        self.learnt_clauses_count = 0
+
+    def reset_state(self):
+        print("Restart")
+        self.restart_threshold = int(self.restart_threshold * CONSTANTS.THRESHOLD_MULTIPLIER)
+        if (self.restart_threshold > self.restart_upper_bound):
+            self.restart_threshold = CONSTANTS.RESTART_LOWER_BOUND
+            self.restart_upper_bound = int(self.restart_upper_bound * CONSTANTS.THRESHOLD_MULTIPLIER)
+        for var in range(1, self.var_count + 1):
+            if (self.assignment_level[var] > 0):
+                # self.assignment_level[var] = -1
+                self.curr_assignment[var] = LiteralState.L_UNASSIGNED
+        # self.curr_assignment = [0 if self.assignment_level[var] > 0 else self.curr_assignment[var] for var in range(1, self.var_count)]
+        self.bcp_stack.clear()
+        self.assigned_till_now.clear()
+        self.assignments_upto_level = [0]
+        self.conflicts_upto_level = [0]
+        self.curr_level = 0
+        self.max_level = 0
 
     def print(self):
         print("{} variables, {} clauses".format(self.var_count, self.clause_count))
@@ -275,9 +311,11 @@ class Solver:
         self.curr_level += 1
         if (self.curr_level > self.max_level):
             self.max_level = self.curr_level
-            self.separators.append(len(self.assigned_till_now))
+            self.assignments_upto_level.append(len(self.assigned_till_now))
+            self.conflicts_upto_level.append(self.learnt_clauses_count)
         else:
-            self.separators[self.curr_level] = len(self.assigned_till_now)        
+            self.assignments_upto_level[self.curr_level] = len(self.assigned_till_now) 
+            self.conflicts_upto_level[self.curr_level] = self.learnt_clauses_count       
         self.assert_nonunary_literal(selected_lit)
         self.bcp_stack.append(get_opposite_literal(selected_lit))
         return SolverState.S_UNRESOLVED
@@ -330,27 +368,38 @@ class Solver:
             curr_literals = [lit for lit in self.clauses[antecedent_id].literals if lit != resolve_lit]
         
         # resolve_lit is an UIP
+        self.learnt_clauses_count += 1
         opposite_resolv_lit = get_opposite_literal(resolve_lit)
         learned_clause.insert_literal(opposite_resolv_lit)
         self.increment_value /= var_decay
-        # TODO: MINISAT decay
         if learned_clause.is_unary:
             self.bcp_stack.append(resolve_lit)
         else:
             self.bcp_stack.append(resolve_lit)
             self.insert_clause(learned_clause, watch_lit, len(learned_clause.literals) - 1)
+        for lit in learned_clause.literals:
+            var = get_variable(lit)
+            print("({}, {})".format(var, self.assignment_level[var]))
         return backtrack_level, opposite_resolv_lit
-        
+    
     def backtrack(self, k: int, uip_lit):
         print("Running backtrack")
         # print("State: ", [state.value for state in self.curr_assignment])
         # print("Dlevel: ", self.assignment_level)
-        for index in range(self.separators[k+1], len(self.assigned_till_now)):
+        if (k < 0 or k >= len(self.conflicts_upto_level)):
+            print("Current level {}, backtrack to {} and max level {}".format(self.curr_level, k, self.max_level))
+            print(self.conflicts_upto_level)
+        
+        if k > 0 and (self.learnt_clauses_count - self.conflicts_upto_level[k] > self.restart_threshold):
+            self.reset_state()
+            return
+
+        for index in range(0, len(self.assigned_till_now)):
             var = get_variable(self.assigned_till_now[index])
-            if (self.assignment_level[var] > 0):
+            if (self.assignment_level[var] > k):
                 self.curr_assignment[var] = LiteralState.L_UNASSIGNED
 
-        self.assigned_till_now = self.assigned_till_now[:self.separators[k+1]]
+        self.assigned_till_now = self.assigned_till_now[:self.assignments_upto_level[k+1]]
         self.curr_level = k
         if k == 0:
             self.assert_unary_literal(uip_lit)
@@ -409,9 +458,12 @@ class Solver:
             print("UNSATISFIABLE")
 
 def read_and_solve_cnf():
-    input_file = open("input/bmc-8.cnf", 'r')
+    input_file = open("input/bmc-13.cnf", 'r')
     current_line = input_file.readline()
     tokens = current_line.split()
+    while (tokens[0] != "p"):
+        current_line = input_file.readline()
+        tokens = current_line.split()
     var_count = int(tokens[-2])
     clause_count = int(tokens[-1])
 
@@ -421,15 +473,15 @@ def read_and_solve_cnf():
         tokens = current_line.split()
         assert(tokens.pop() == "0")
         
-        literals = [get_literal(int(literal)) for literal in tokens]
-        curr_clause = Clause(literals)
+        literals = set([get_literal(int(literal)) for literal in tokens])
+        curr_clause = Clause(list(literals))
         if (curr_clause.is_unary):
             lit = curr_clause.literals[0]
             solver.assert_unary_literal(lit)
             solver.bcp_stack.append(get_opposite_literal(lit))
         else:
             solver.insert_clause(curr_clause, 0, 1)
-    solver.print()
+    # solver.print()
     solver.solve()
 
 if __name__ == "__main__":
