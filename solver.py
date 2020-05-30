@@ -3,19 +3,20 @@ Author: Nitin Kedia, 160101048
 Description: A CDCL based SAT solver
 """
 
-import time
-from enum import Enum
+import time, random, copy, enum
+# from enum import Enum
+from sortedcontainers import SortedSet
 
 class CONSTANTS:
     # These constant will be explained in context
     # used in MINISAT (decision heuristic)
-    VAR_DECAY_RATE = 0.95 
+    VAR_DECAY_RATE = 0.99
     # used to decide when to restart
     THRESHOLD_MULTIPLIER = 1.1
     RESTART_LOWER_BOUND = 100
     RESTART_UPPER_BOUND_BASE = 1000
 
-class ClauseState(Enum):
+class ClauseState(enum.auto):
     C_UNRESOLVED = 0
     C_SATISFIED = 1
     C_CONFLICTING = 2
@@ -23,12 +24,12 @@ class ClauseState(Enum):
 
 # Note that LiteralState also functions as VariableState
 # The state a literal of a variable fixes that of the variable and vice-versa
-class LiteralState(Enum):
+class LiteralState(enum.auto):
     L_UNASSIGNED = -1
     L_FALSE = 0
     L_TRUE = 1
 
-class SolverState(Enum):
+class SolverState(enum.auto):
     S_UNRESOLVED = 0
     S_SATISFIED = 1
     S_UNSATISFIED = 2
@@ -92,7 +93,8 @@ class Clause:
         for index, lit in enumerate(self.literals):
             if (lit == other_watcher):
                 continue
-            lit_state = solver.get_literal_status(lit)
+            lit_state = solver.curr_literal_assignment[lit]
+            # lit_state = solver.get_literal_status(lit)
             if (lit_state != LiteralState.L_FALSE):
                 if is_first_watcher:
                     self.first_watcher = index
@@ -100,7 +102,8 @@ class Clause:
                     self.second_watcher = index
                 return ClauseState.C_UNRESOLVED, index
         # Could not find another unassigned, fate of the clause is in the hands of the other watcher
-        other_watch_status = solver.get_literal_status(other_watcher)
+        other_watch_status = solver.curr_literal_assignment[other_watcher]
+        # other_watch_status = solver.get_literal_status(other_watcher)
         if (other_watch_status == LiteralState.L_FALSE):
             # All literals are false
             return ClauseState.C_CONFLICTING, None
@@ -123,6 +126,7 @@ class Solver:
         # Since variables are 1-indexed, size of these lists if (var_count + 1)
         # curr_assignment gives the latest assignment of a variable
         self.curr_assignment = [LiteralState.L_UNASSIGNED] * (var_count + 1)
+        self.curr_literal_assignment = [LiteralState.L_UNASSIGNED] * (2 * var_count + 1)
         # prev_assignment is used in PHASE SAVING
         self.prev_assignment = [-1] * (var_count + 1)
         # The level the variable was assigned at (if at all)
@@ -132,6 +136,7 @@ class Solver:
         self.assignments_upto_level = [0] # How many assignments had happened upto a level?
         self.conflicts_upto_level = [0] # How many conflicts hence clauses learned upto a level?
         self.antecedent = [-1] * (var_count + 1)
+        self.score2var = SortedSet()
 
         self.bcp_stack = []
         # watch_map: literal -> list of clauses for which this literal is the watcher
@@ -150,6 +155,26 @@ class Solver:
         self.learnt_clauses_count = 0
         self.decision_count = 0
         self.assignments_count = 0
+    
+    def assign_variable(self, var: int, assignment: LiteralState):
+        self.curr_assignment[var] = assignment
+        if assignment != LiteralState.L_UNASSIGNED:
+            self.prev_assignment[var] = assignment
+        self.curr_literal_assignment[2 * var] = assignment
+        neg_assignment = LiteralState.L_UNASSIGNED 
+        if assignment == LiteralState.L_TRUE:
+            neg_assignment = LiteralState.L_FALSE
+        elif assignment == LiteralState.L_FALSE:
+            neg_assignment = LiteralState.L_TRUE
+        self.curr_literal_assignment[2 * var - 1] = neg_assignment
+    
+    def bump_var_score(self, var: int, increment_value = 0.0):
+        cur_score = self.activity[var]
+        if (cur_score, var) in self.score2var:
+            self.score2var.remove((cur_score, var))
+        cur_score += increment_value
+        self.activity[var] = cur_score
+        self.score2var.add((cur_score, var))
 
     def print_clauses(self):
         print("{} variables, {} clauses".format(self.var_count, self.clause_count))
@@ -186,7 +211,8 @@ class Solver:
         # Since we are inserting a clause, increase the scores of variables in this literal
         for literal in clause.literals:
             var = get_variable(literal)
-            self.activity[var] += self.increment_value
+            self.bump_var_score(var, self.increment_value)
+            # self.activity[var] += self.increment_value
     
     # Function used to assign a literal TRUE in a unary clause
     # These assignments are never reset hence not put in assigned_till_now[]
@@ -195,9 +221,11 @@ class Solver:
         var = get_variable(lit)
         # Set state of the underlying variable
         if is_negative(lit):
-            self.curr_assignment[var] = LiteralState.L_FALSE
+            self.assign_variable(var, LiteralState.L_FALSE)
+            # self.curr_assignment[var] = LiteralState.L_FALSE
         else:
-            self.curr_assignment[var] = LiteralState.L_TRUE
+            self.assign_variable(var, LiteralState.L_TRUE)
+            # self.curr_assignment[var] = LiteralState.L_TRUE
         self.assignment_level[var] = 0 # Always done at ground level
     
     # Function used to assign a literal TRUE in a non-unary clause
@@ -207,21 +235,25 @@ class Solver:
         self.assigned_till_now.append(lit)
         var = get_variable(lit)
         if is_negative(lit):
-            self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_FALSE
+            self.assign_variable(var, LiteralState.L_FALSE)
+            # self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_FALSE
         else:
-            self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_TRUE
+            self.assign_variable(var, LiteralState.L_TRUE)
+            # self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_TRUE
         self.assignment_level[var] = self.curr_level
 
     # Returns the state of given literal
     # States of variables like uassgned, true etc. are tracked, state of literals can be found from it
-    def get_literal_status(self, lit : int) -> LiteralState:
-        var_status = self.curr_assignment[get_variable(lit)]
-        if var_status == LiteralState.L_UNASSIGNED:
-            return LiteralState.L_UNASSIGNED
-        elif var_status == LiteralState.L_TRUE:
-            return LiteralState.L_FALSE if is_negative(lit) else LiteralState.L_TRUE
-        else:
-            return LiteralState.L_TRUE if is_negative(lit) else LiteralState.L_FALSE
+    # def get_literal_status(self, lit : int) -> LiteralState:
+    #     var_status = self.curr_assignment[get_variable(lit)]
+    #     if not is_negative(lit):
+    #         return var_status
+    #     elif var_status == LiteralState.L_UNASSIGNED:
+    #         return LiteralState.L_UNASSIGNED
+    #     elif var_status == LiteralState.L_TRUE:
+    #         return LiteralState.L_FALSE
+    #     else:
+    #         return LiteralState.L_TRUE
 
     """
     Function to implement Boolean Constant Propagation using Two-watcher optimisation:
@@ -236,11 +268,12 @@ class Solver:
         while (self.bcp_stack):
             # Got a literal with FALSE assignment
             lit = self.bcp_stack.pop()
-            assert self.get_literal_status(lit) == LiteralState.L_FALSE
+            assert self.curr_literal_assignment[lit] == LiteralState.L_FALSE
+            # assert self.get_literal_status(lit) == LiteralState.L_FALSE
             
             if lit not in self.watch_map:
                 self.watch_map[lit] = []
-            new_watch_list = [x for x in self.watch_map[lit]] # Backup watch list of lit
+            new_watch_list = copy.copy(self.watch_map[lit]) # Backup watch list of lit
             
             
             # Traverse only the watchlist of that clause to save computation
@@ -285,7 +318,7 @@ class Solver:
             # Note that in case of backtrack, we dot need to revert the watchers in two-watcher method
             # since in backtracking, some variables will be unassigned, enforcing the two-watch invariant
             self.watch_map[lit].clear()
-            self.watch_map[lit] += new_watch_list
+            self.watch_map[lit] = new_watch_list
             if (conflicting_clause_id >= 0):
                 return SolverState.S_CONFLICT, conflicting_clause_id
         return SolverState.S_UNRESOLVED, conflicting_clause_id
@@ -312,22 +345,35 @@ class Solver:
         # print("Running decider")
         # self.print_curr_assignment()
         # print("Activity: ", self.activity)
-        # selected_var = 0
-
+        selected_lit = 0
+        unassigned_var_found = False
+        while self.score2var:
+            _, var = self.score2var.pop()
+            if self.curr_assignment[var] == LiteralState.L_UNASSIGNED:
+                unassigned_var_found = True
+                selected_lit = self.get_lit_memoised(var)
+                # max_till_now = 0.0
+                # for var in range(self.var_count + 1):
+                #     if self.curr_assignment[var] == LiteralState.L_UNASSIGNED:
+                #         max_till_now = max(max_till_now, self.activity[var])
+                # print(var, max_score, max_till_now)
+                # assert(max_score == max_till_now)
+                break
+        
         # Iterate through all variables to find an unassgned one with maximum score
         # Some inputs have unused variables, so we select only those with positive score.
-        selected_lit = 0
-        max_activity_till_now = 0.0
-        unassigned_var_found = False
-        for var, state in enumerate(self.curr_assignment):
-            if (var == 0):
-                continue
-            if (state == LiteralState.L_UNASSIGNED and self.activity[var] > 0.0):
-                unassigned_var_found = True
-                if (self.activity[var] > max_activity_till_now):
-                    # selected_var = var
-                    selected_lit = self.get_lit_memoised(var)
-                    max_activity_till_now = self.activity[var]
+        # selected_lit = 0
+        # max_activity_till_now = 0.0
+        # unassigned_var_found = False
+        # for var, state in enumerate(self.curr_assignment):
+        #     if (var == 0):
+        #         continue
+        #     if (state == LiteralState.L_UNASSIGNED and self.activity[var] > 0.0):
+        #         unassigned_var_found = True
+        #         if (self.activity[var] > max_activity_till_now):
+        #             # selected_var = var
+        #             selected_lit = self.get_lit_memoised(var)
+        #             max_activity_till_now = self.activity[var]
         if not unassigned_var_found:
             return SolverState.S_SATISFIED
         # print(selected_lit, selected_var, max_activity_till_now)
@@ -442,7 +488,9 @@ class Solver:
         # Resets are similar to backtrack() function below, except that it resets evrything to ground level  
         for var in range(1, self.var_count + 1):
             if (self.assignment_level[var] > 0):
-                self.curr_assignment[var] = LiteralState.L_UNASSIGNED
+                self.assign_variable(var, LiteralState.L_UNASSIGNED)
+                # self.curr_assignment[var] = LiteralState.L_UNASSIGNED
+                self.bump_var_score(var)
         
         self.bcp_stack.clear()
         self.assigned_till_now.clear()
@@ -467,7 +515,9 @@ class Solver:
         for index in range(self.assignments_upto_level[k+1], len(self.assigned_till_now)):
             var = get_variable(self.assigned_till_now[index])
             if (self.assignment_level[var] > k):
-                self.curr_assignment[var] = LiteralState.L_UNASSIGNED
+                self.assign_variable(var, LiteralState.L_UNASSIGNED)
+                # self.curr_assignment[var] = LiteralState.L_UNASSIGNED
+                self.bump_var_score(var)
 
         # analyse_function() returns an asserting clause with the UIP just ready for assignment
         # This helps to immediately put the learnt clause into practice
@@ -488,7 +538,8 @@ class Solver:
         for clause in all_clauses:
             true_literal_found = False
             for lit in clause.literals:
-                if (self.get_literal_status(lit) == LiteralState.L_TRUE):
+                if self.curr_literal_assignment[lit] == LiteralState.L_TRUE:
+                # if (self.get_literal_status(lit) == LiteralState.L_TRUE):
                     true_literal_found = True
                     break
             if not true_literal_found:
@@ -548,9 +599,9 @@ class Solver:
         print("# Time (s): ", solve_time)
 
 # IO function
-def read_and_solve_cnf():
+def read_and_solve_cnf(input_file):
     # Read the specified input cnf file
-    input_file = open("input/sat/bmc-2.cnf", 'r')
+    input_file = open(input_file, 'r')
     current_line = input_file.readline()
     tokens = current_line.split()
     while (tokens[0] != "p"):
@@ -577,7 +628,11 @@ def read_and_solve_cnf():
             solver.bcp_stack.append(get_opposite_literal(lit))
             solver.unary_clauses.append(curr_clause)
         else:
-            solver.insert_clause(curr_clause, 0, 1)
+            x = random.randrange(len(literals))
+            y = random.randrange(len(literals))
+            while x == y:
+                y = random.randrange(len(literals))
+            solver.insert_clause(curr_clause, x, y)
 
     # solver.print_clauses()
     start_time = time.process_time()
@@ -587,4 +642,6 @@ def read_and_solve_cnf():
     solver.print_statistics(finish_time - start_time)
 
 if __name__ == "__main__":
-    read_and_solve_cnf()
+    random.seed(0)
+    input_file = "input/sat/bmc-1.cnf"
+    read_and_solve_cnf(input_file)
