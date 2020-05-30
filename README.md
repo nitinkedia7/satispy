@@ -13,3 +13,4 @@
 | sat/bmc-9.cnf | real 13m19.910s, user 13m17.934s, sys 0m0.892s | | |
 | sat/bmc-10.cnf | real 29m28.093s, user 29m25.185s, sys 0m0.720s | | |
 | sat/bmc-11.cnf | real 15m38.060s, user 15m36.147s, sys 0m0.420s | | |
+| sat/bmc-13.cnf | real 1m48.175s, user 1m47.867s, sys 0m0.132s| | |
