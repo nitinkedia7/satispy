@@ -1,5 +1,5 @@
+import time
 from enum import Enum
-
 
 class CONSTANTS:
     VAR_DECAY_RATE = 0.95
@@ -7,7 +7,6 @@ class CONSTANTS:
     RESTART_LOWER_BOUND = 100
     RESTART_UPPER_BOUND_BASE = 1000
 
-var_decay = 0.95
 class ClauseState(Enum):
     C_UNRESOLVED = 0
     C_SATISFIED = 1
@@ -51,11 +50,9 @@ class Clause:
     second_watcher : int
     is_unary: bool
 
-    def __init__(self, literals: list = []):
+    def __init__(self, literals: list):
         self.literals = literals
         self.is_unary = (len(literals) == 1)
-        # self.first_watcher = 0
-        # self.second_watcher = len(literals) - 1
 
     def insert_literal(self, lit):
         if lit not in self.literals:
@@ -97,6 +94,7 @@ class Solver:
     var_count: int
     clause_count: int
     clauses: list
+    unary_clauses: list
 
     curr_level : int
     max_level : int
@@ -119,13 +117,19 @@ class Solver:
     # Dynamic restart parameters
     restart_threshold : int
     restart_upper_bound : int
+
+    # Statistics
+    restart_count: int
     learnt_clauses_count : int
+    decision_count: int
+    assignments_count: int
 
     def __init__(self, var_count, clause_count):
         self.var_count = var_count
         self.clause_count = clause_count
-        
         self.clauses = []
+        self.unary_clauses = []
+
         self.curr_level = 0
         self.max_level = 0
         self.curr_assignment = [LiteralState.L_UNASSIGNED] * (var_count + 1)
@@ -144,17 +148,21 @@ class Solver:
 
         self.restart_threshold = CONSTANTS.RESTART_LOWER_BOUND
         self.restart_upper_bound = CONSTANTS.RESTART_UPPER_BOUND_BASE
+        
+        self.restart_count = 0
         self.learnt_clauses_count = 0
+        self.decision_count = 0
+        self.assignments_count = 0
 
     def reset_state(self):
-        print("Restart")
+        # print("Restart")
+        self.restart_count += 1
         self.restart_threshold = int(self.restart_threshold * CONSTANTS.THRESHOLD_MULTIPLIER)
         if (self.restart_threshold > self.restart_upper_bound):
             self.restart_threshold = CONSTANTS.RESTART_LOWER_BOUND
             self.restart_upper_bound = int(self.restart_upper_bound * CONSTANTS.THRESHOLD_MULTIPLIER)
         for var in range(1, self.var_count + 1):
             if (self.assignment_level[var] > 0):
-                # self.assignment_level[var] = -1
                 self.curr_assignment[var] = LiteralState.L_UNASSIGNED
         # self.curr_assignment = [0 if self.assignment_level[var] > 0 else self.curr_assignment[var] for var in range(1, self.var_count)]
         self.bcp_stack.clear()
@@ -164,7 +172,7 @@ class Solver:
         self.curr_level = 0
         self.max_level = 0
 
-    def print(self):
+    def print_clauses(self):
         print("{} variables, {} clauses".format(self.var_count, self.clause_count))
         for clause_id, clause in enumerate(self.clauses):
             clause.print(clause_id)
@@ -197,16 +205,16 @@ class Solver:
         self.watch_this_clause(clause.get_second_watcher(), clause_id)
     
     def assert_unary_literal(self, lit):
+        self.assignments_count += 1
         var = get_variable(lit)
         if is_negative(lit):
             self.curr_assignment[var] = LiteralState.L_FALSE
         else:
             self.curr_assignment[var] = LiteralState.L_TRUE
         self.assignment_level[var] = 0
-        # print("Assigend unary literal {} as {}, variable {} as {}".format(
-        #     lit, LiteralState.L_TRUE, var, self.curr_assignment[var]))
 
     def assert_nonunary_literal(self, lit):
+        self.assignments_count += 1
         self.assigned_till_now.append(lit)
         var = get_variable(lit)
         if is_negative(lit):
@@ -214,8 +222,6 @@ class Solver:
         else:
             self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_TRUE
         self.assignment_level[var] = self.curr_level
-        # print("Assigned literal {} as {}, variable {} as {}".format(
-        #     lit, LiteralState.L_TRUE, var, self.curr_assignment[var]))
 
     def get_literal_status(self, lit : int) -> LiteralState:
         var_status = self.curr_assignment[get_variable(lit)]
@@ -227,7 +233,7 @@ class Solver:
             return LiteralState.L_TRUE if is_negative(lit) else LiteralState.L_FALSE
 
     def bcp(self) -> (SolverState, int):
-        print("Running BCP with stack", self.bcp_stack)
+        # print("Running BCP with stack", self.bcp_stack)
         conflicting_clause_id = -1
         while (self.bcp_stack):
             lit = self.bcp_stack.pop()
@@ -280,10 +286,10 @@ class Solver:
             return get_literal(-1 * var)
 
     def decide(self) -> SolverState: # MINISAT based decision heuristic
-        print("Running decider")
+        # print("Running decider")
         # self.print_curr_assignment()
         # print("Activity: ", self.activity)
-        selected_var = 0
+        # selected_var = 0
         selected_lit = 0
         max_activity_till_now = 0.0
         unassigned_var_found = False
@@ -293,21 +299,14 @@ class Solver:
             if (state == LiteralState.L_UNASSIGNED and self.activity[var] > 0.0):
                 unassigned_var_found = True
                 if (self.activity[var] > max_activity_till_now):
-                    selected_var = var
+                    # selected_var = var
                     selected_lit = self.get_lit_memo(var)
                     max_activity_till_now = self.activity[var]
         if not unassigned_var_found:
             return SolverState.S_SATISFIED
-        print(selected_lit, selected_var)
-        if (selected_lit == 0):
-            # for var, state in enumerate(self.curr_assignment):
-            #     if (var == 0):
-            #         continue
-            #     if (state == LiteralState.L_UNASSIGNED)
-            print("State: ", [state.value for state in self.curr_assignment])
-            print("Activity: ", self.activity)
-            print(max_activity_till_now)
+        # print(selected_lit, selected_var, max_activity_till_now)
         assert selected_lit != 0
+        self.decision_count += 1
         self.curr_level += 1
         if (self.curr_level > self.max_level):
             self.max_level = self.curr_level
@@ -321,7 +320,7 @@ class Solver:
         return SolverState.S_UNRESOLVED
     
     def analyze_conflict(self, conflicting_clause: Clause) -> (int, int):
-        print("Running analyse_conflict")
+        # print("Running analyse_conflict")
         curr_literals = [lit for lit in conflicting_clause.literals]
         learned_clause = Clause([])
         marked = [False] * (self.var_count + 1)
@@ -334,12 +333,6 @@ class Solver:
         resolve_var = 0
         iter = 0
         while (iter == 0 or to_resolve_count > 0):
-            # print(iter)
-            # print("curr_literals: ", curr_literals)
-            # print("learned_literals: ", learned_clause.literals)
-            # print("")
-            # if (iter > 10):
-            #     raise Exception("Too many resolves")
             iter += 1
             for lit in curr_literals:
                 var = get_variable(lit)
@@ -371,30 +364,30 @@ class Solver:
         self.learnt_clauses_count += 1
         opposite_resolv_lit = get_opposite_literal(resolve_lit)
         learned_clause.insert_literal(opposite_resolv_lit)
-        self.increment_value /= var_decay
+        self.increment_value /= CONSTANTS.VAR_DECAY_RATE
         if learned_clause.is_unary:
             self.bcp_stack.append(resolve_lit)
+            self.unary_clauses.append(learned_clause)
         else:
             self.bcp_stack.append(resolve_lit)
             self.insert_clause(learned_clause, watch_lit, len(learned_clause.literals) - 1)
-        for lit in learned_clause.literals:
-            var = get_variable(lit)
-            print("({}, {})".format(var, self.assignment_level[var]))
+        # for lit in learned_clause.literals:
+        #     var = get_variable(lit)
+        #     print("({}, {})".format(var, self.assignment_level[var]))
         return backtrack_level, opposite_resolv_lit
     
     def backtrack(self, k: int, uip_lit):
-        print("Running backtrack")
-        # print("State: ", [state.value for state in self.curr_assignment])
-        # print("Dlevel: ", self.assignment_level)
-        if (k < 0 or k >= len(self.conflicts_upto_level)):
-            print("Current level {}, backtrack to {} and max level {}".format(self.curr_level, k, self.max_level))
-            print(self.conflicts_upto_level)
+        # print("Running backtrack")
+        
+        # if (k < 0 or k >= len(self.conflicts_upto_level)):
+        #     print("Current level {}, backtrack to {} and max level {}".format(self.curr_level, k, self.max_level))
+        #     print(self.conflicts_upto_level)
         
         if k > 0 and (self.learnt_clauses_count - self.conflicts_upto_level[k] > self.restart_threshold):
             self.reset_state()
             return
 
-        for index in range(0, len(self.assigned_till_now)):
+        for index in range(self.assignments_upto_level[k+1], len(self.assigned_till_now)):
             var = get_variable(self.assigned_till_now[index])
             if (self.assignment_level[var] > k):
                 self.curr_assignment[var] = LiteralState.L_UNASSIGNED
@@ -406,59 +399,67 @@ class Solver:
         else:
             self.assert_nonunary_literal(uip_lit)
         self.antecedent[get_variable(uip_lit)] = len(self.clauses) - 1
-        # print("State: ", [state.value for state in self.curr_assignment])
-        # print("Dlevel: ", self.assignment_level)
 
     def verify_assignment(self):
         non_true_clauses = []
-        for clause_id in range(self.clause_count):
+        all_clauses = self.clauses + self.unary_clauses
+        for clause in all_clauses:
             true_literal_found = False
-            for lit in self.clauses[clause_id].literals:
+            for lit in clause.literals:
                 if (self.get_literal_status(lit) == LiteralState.L_TRUE):
                     true_literal_found = True
                     break
             if not true_literal_found:
-                non_true_clauses.append(clause_id)
+                non_true_clauses.append(clause)
         if not non_true_clauses:
-            print("AC, All {} clauses evaluate to true under given assignment")
+            print("AC, All clauses evaluate to true under given assignment")
         else:
-            print("WA, Unsatisfied clauses found ", non_true_clauses)
+            print("WA, {} unsatisfied clauses found".format(len(non_true_clauses)))
 
     def run_cdcl(self) -> SolverState:
         result: SolverState
         while (True):
             while (True):
                 result, conflicting_clause_id = self.bcp()
-                print("BCP result was {}".format(result))
+                # print("BCP result was {}".format(result))
                 if (result == SolverState.S_UNSATISFIED):
                     return result
                 if (result == SolverState.S_CONFLICT):
                     assert conflicting_clause_id != -1
                     backtrack_level, uip_lit = self.analyze_conflict(self.clauses[conflicting_clause_id])
-                    print("Analyze result was k = {}, uip = {}".format(backtrack_level, uip_lit))
+                    # print("Analyze result was k = {}, uip = {}".format(backtrack_level, uip_lit))
                     self.backtrack(backtrack_level, uip_lit)
                 else:
                     break
             result = self.decide()
-            print("Decide result was {}".format(result))
+            # print("Decide result was {}".format(result))
             if (result == SolverState.S_UNSATISFIED or result == SolverState.S_SATISFIED):
                 return result
 
     def solve(self):
-        print("Solving")
+        # print("Solving")
         result : SolverState = self.run_cdcl()
         if (result == SolverState.S_SATISFIED):
+            # print("Assignment of {} variables:".format(self.var_count))
+            # for var, state in enumerate(self.curr_assignment):
+            #     if (var == 0):
+            #         continue
+            #     print("{}: {},".format(var, state.value), end = " ")
+            # print()
             print("SATISFIABLE")
-            for var, state in enumerate(self.curr_assignment):
-                if (var == 0):
-                    continue
-                print("{}: {}".format(var, state))
-            self.verify_assignment()
         else:
             print("UNSATISFIABLE")
 
+    def print_statistics(self, solve_time):
+        print("# Statistics: ")
+        print("# Restarts: ", self.restart_count)
+        print("# Learned cluases: ", self.learnt_clauses_count)
+        print("# Decisions: ", self.decision_count)
+        print("# Implications: ", self.assignments_count - self.decision_count)
+        print("# Time (s): ", solve_time)
+
 def read_and_solve_cnf():
-    input_file = open("input/bmc-13.cnf", 'r')
+    input_file = open("input/sat/bmc-13.cnf", 'r')
     current_line = input_file.readline()
     tokens = current_line.split()
     while (tokens[0] != "p"):
@@ -479,10 +480,15 @@ def read_and_solve_cnf():
             lit = curr_clause.literals[0]
             solver.assert_unary_literal(lit)
             solver.bcp_stack.append(get_opposite_literal(lit))
+            solver.unary_clauses.append(curr_clause)
         else:
             solver.insert_clause(curr_clause, 0, 1)
-    # solver.print()
+    # solver.print_clauses()
+    start_time = time.process_time()
     solver.solve()
+    finish_time = time.process_time()
+    solver.verify_assignment()
+    solver.print_statistics(finish_time - start_time)
 
 if __name__ == "__main__":
     read_and_solve_cnf()
