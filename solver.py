@@ -4,13 +4,12 @@ Description: A CDCL based SAT solver
 """
 
 import time, random, copy, enum
-# from enum import Enum
 from sortedcontainers import SortedSet
 
 class CONSTANTS:
     # These constant will be explained in context
     # used in MINISAT (decision heuristic)
-    VAR_DECAY_RATE = 0.99
+    VAR_DECAY_RATE = 0.95
     # used to decide when to restart
     THRESHOLD_MULTIPLIER = 1.1
     RESTART_LOWER_BOUND = 100
@@ -41,23 +40,23 @@ The positive literal of a variable v is given by 2*v, while negation is 2*v - 1
 Following four are help functions based on this terminology
 """
 def get_literal(v: int) -> int:
-    if (v == 0):
-        raise Exception("Variable cannot be zero.")
+    # if (v == 0):
+    #     raise Exception("Variable cannot be zero.")
     return 2 * v if v > 0 else 2 * (abs(v)) - 1
 
 def get_variable(l : int) -> int:
-    if (l <= 0):
-        raise Exception("Literal must be a positive integer, is {}".format(l))
+    # if (l <= 0):
+    #     raise Exception("Literal must be a positive integer, is {}".format(l))
     return int((l + 1) / 2) if l % 2  else int(l / 2)
 
 def get_opposite_literal(l : int) -> int:
-    if (l <= 0):
-        raise Exception("Literal must be a positive integer, is {}".format(l))
+    # if (l <= 0):
+    #     raise Exception("Literal must be a positive integer, is {}".format(l))
     return (l + 1) if l % 2 else (l - 1)
 
 def is_negative(l : int) -> bool:
-    if (l <= 0):
-        raise Exception("Literal must be a positive integer, is {}".format(l))
+    # if (l <= 0):
+    #     raise Exception("Literal must be a positive integer, is {}".format(l))
     return True if l % 2 else False
 
 class Clause:
@@ -155,6 +154,7 @@ class Solver:
         self.learnt_clauses_count = 0
         self.decision_count = 0
         self.assignments_count = 0
+        self.global_max_score = 0.0
     
     def assign_variable(self, var: int, assignment: LiteralState):
         self.curr_assignment[var] = assignment
@@ -192,9 +192,9 @@ class Solver:
     # This fn is used to add the given clause to the watchlist of given literal
     def watch_this_clause(self, lit, clause_id):
         if lit in self.watch_map: 
-            self.watch_map[lit].append(clause_id)
+            self.watch_map[lit].add(clause_id)
         else:
-            self.watch_map[lit] = [clause_id]
+            self.watch_map[lit] = set([clause_id])
     
     # Insert a new (input / learned) clause to the cnf
     def insert_clause(self, clause : Clause, first_watch, second_watch):
@@ -242,19 +242,6 @@ class Solver:
             # self.prev_assignment[var] = self.curr_assignment[var] = LiteralState.L_TRUE
         self.assignment_level[var] = self.curr_level
 
-    # Returns the state of given literal
-    # States of variables like uassgned, true etc. are tracked, state of literals can be found from it
-    # def get_literal_status(self, lit : int) -> LiteralState:
-    #     var_status = self.curr_assignment[get_variable(lit)]
-    #     if not is_negative(lit):
-    #         return var_status
-    #     elif var_status == LiteralState.L_UNASSIGNED:
-    #         return LiteralState.L_UNASSIGNED
-    #     elif var_status == LiteralState.L_TRUE:
-    #         return LiteralState.L_FALSE
-    #     else:
-    #         return LiteralState.L_TRUE
-
     """
     Function to implement Boolean Constant Propagation using Two-watcher optimisation:
     bcp_stack contains all the literals which have been assigned false in current search path.
@@ -272,12 +259,12 @@ class Solver:
             # assert self.get_literal_status(lit) == LiteralState.L_FALSE
             
             if lit not in self.watch_map:
-                self.watch_map[lit] = []
+                self.watch_map[lit] = set()
             new_watch_list = copy.copy(self.watch_map[lit]) # Backup watch list of lit
             
-            
+
             # Traverse only the watchlist of that clause to save computation
-            for clause_id in reversed(self.watch_map[lit]):
+            for clause_id in self.watch_map[lit]:
                 clause = self.clauses[clause_id]
                 
                 # This block determines which watcher (1st / 2nd) was lit
@@ -345,35 +332,18 @@ class Solver:
         # print("Running decider")
         # self.print_curr_assignment()
         # print("Activity: ", self.activity)
+        # Find an unassigned one with maximum score
+        # Some inputs have unused variables, so we select only those with positive score.
         selected_lit = 0
         unassigned_var_found = False
         while self.score2var:
-            _, var = self.score2var.pop()
+            max_score, var = self.score2var.pop()
+            self.global_max_score = max(self.global_max_score, max_score)
             if self.curr_assignment[var] == LiteralState.L_UNASSIGNED:
                 unassigned_var_found = True
                 selected_lit = self.get_lit_memoised(var)
-                # max_till_now = 0.0
-                # for var in range(self.var_count + 1):
-                #     if self.curr_assignment[var] == LiteralState.L_UNASSIGNED:
-                #         max_till_now = max(max_till_now, self.activity[var])
-                # print(var, max_score, max_till_now)
-                # assert(max_score == max_till_now)
                 break
         
-        # Iterate through all variables to find an unassgned one with maximum score
-        # Some inputs have unused variables, so we select only those with positive score.
-        # selected_lit = 0
-        # max_activity_till_now = 0.0
-        # unassigned_var_found = False
-        # for var, state in enumerate(self.curr_assignment):
-        #     if (var == 0):
-        #         continue
-        #     if (state == LiteralState.L_UNASSIGNED and self.activity[var] > 0.0):
-        #         unassigned_var_found = True
-        #         if (self.activity[var] > max_activity_till_now):
-        #             # selected_var = var
-        #             selected_lit = self.get_lit_memoised(var)
-        #             max_activity_till_now = self.activity[var]
         if not unassigned_var_found:
             return SolverState.S_SATISFIED
         # print(selected_lit, selected_var, max_activity_till_now)
@@ -502,11 +472,6 @@ class Solver:
     # Function to backtrack based on the output of analyse_conflict() 
     def backtrack(self, k: int, uip_lit):
         # print("Running backtrack")
-        
-        # if (k < 0 or k >= len(self.conflicts_upto_level)):
-        #     print("Current level {}, backtrack to {} and max level {}".format(self.curr_level, k, self.max_level))
-        #     print(self.conflicts_upto_level)
-        
         # Invoke restart heuristic if too many clauses have been learnt after backtrack target level
         if k > 0 and (self.learnt_clauses_count - self.conflicts_upto_level[k] > self.restart_threshold):
             self.reset_state()
@@ -580,22 +545,24 @@ class Solver:
         # print("Solving")
         result : SolverState = self.run_cdcl()
         if (result == SolverState.S_SATISFIED):
-            # print("Assignment of {} variables:".format(self.var_count))
-            # for var, state in enumerate(self.curr_assignment):
-            #     if (var == 0):
-            #         continue
-            #     print("{}: {},".format(var, state.value), end = " ")
-            # print()
             print("SATISFIABLE")
+            self.verify_assignment()
+            with open("assignment.txt", 'w') as assignment_file:
+                for var, state in enumerate(self.curr_assignment):
+                    if (var == 0):
+                        assignment_file.write("State: ")
+                        continue
+                    assignment_file.write("{} ".format(-1 * var if state == LiteralState.L_FALSE else var))
         else:
             print("UNSATISFIABLE")
 
     def print_statistics(self, solve_time):
         print("## Statistics: ")
         print("# Restarts: ", self.restart_count)
-        print("# Learned cluases: ", self.learnt_clauses_count)
+        print("# Learned clauses: ", self.learnt_clauses_count)
         print("# Decisions: ", self.decision_count)
         print("# Implications: ", self.assignments_count - self.decision_count)
+        print("# Max score: ", self.global_max_score)
         print("# Time (s): ", solve_time)
 
 # IO function
@@ -638,7 +605,6 @@ def read_and_solve_cnf(input_file):
     start_time = time.process_time()
     solver.solve()
     finish_time = time.process_time()
-    solver.verify_assignment()
     solver.print_statistics(finish_time - start_time)
 
 if __name__ == "__main__":
