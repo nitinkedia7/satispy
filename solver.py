@@ -160,21 +160,19 @@ class Solver:
         self.curr_assignment[var] = assignment
         if assignment != LiteralState.L_UNASSIGNED:
             self.prev_assignment[var] = assignment
-        self.curr_literal_assignment[2 * var] = assignment
+        self.curr_literal_assignment[get_literal(var)] = assignment
         neg_assignment = LiteralState.L_UNASSIGNED 
         if assignment == LiteralState.L_TRUE:
             neg_assignment = LiteralState.L_FALSE
         elif assignment == LiteralState.L_FALSE:
             neg_assignment = LiteralState.L_TRUE
-        self.curr_literal_assignment[2 * var - 1] = neg_assignment
+        self.curr_literal_assignment[get_literal(-1 * var)] = neg_assignment
     
     def bump_var_score(self, var: int, increment_value = 0.0):
-        cur_score = self.activity[var]
-        if (cur_score, var) in self.score2var:
-            self.score2var.remove((cur_score, var))
-        cur_score += increment_value
-        self.activity[var] = cur_score
-        self.score2var.add((cur_score, var))
+        if increment_value > 0:
+            self.score2var.discard((self.activity[var], var))
+            self.activity[var] += increment_value
+        self.score2var.add((self.activity[var], var))
 
     def print_clauses(self):
         print("{} variables, {} clauses".format(self.var_count, self.clause_count))
